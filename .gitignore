@@ -1,0 +1,8 @@
+/.quarto/
+.DS_Store
+.venv/
+renv/
+_book/
+*_cache/
+_freeze/
+.Rprofile

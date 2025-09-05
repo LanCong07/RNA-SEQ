@@ -12,6 +12,10 @@
 
 ## GenBank Batch Parsing and Multi‑format Export (bioconda)
 
+```{r}
+reticulate::use_python(".venv/bin/python", required = TRUE)
+```
+
 ```{python}
 from pathlib import Path
 from Bio import SeqIO
@@ -87,8 +91,8 @@ def gb_to_fasta_gtf_protein(gb_path):
 
 # 批量处理两个文件
 gb_files = [
-    r"rawdata\Pantoea\ncbi\pantoea.gb",
-    r"rawdata\Burkholderia\ncbi\Burkholderia.gb"
+    r"rawdata/Pantoea/ncbi/pantoea.gb",
+    r"rawdata/Burkholderia/ncbi/Burkholderia.gb"
 ]
 
 for gb in gb_files:

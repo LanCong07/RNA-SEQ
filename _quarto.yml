@@ -14,11 +14,8 @@ book:
 execute:
   # 默认执行引擎设置为 R
   engine: r
+  freeze: auto
 
-  python: "C:/Users/99374/anaconda3/envs/Carveme/python.exe"
-  error: true
-  echo: true
-  cache: true
 
 format:
   html:

@@ -10,6 +10,8 @@
 ## Sequencing results
 ### 上游分析
 ```{bash}
+#| eval: false
+
 #!/usr/bin/env bash
 set -Eeuo pipefail
 shopt -s nullglob
@@ -228,7 +230,7 @@ library(DESeq2)
 library(openxlsx)
 
 # 统一输出目录
-out_dir <- "D:/数据/种子代谢物复苏优势菌/转录组/rna-seq/rawdata/DEG_result"
+out_dir <- "rawdata/DEG_result"
 if (!dir.exists(out_dir)) dir.create(out_dir, recursive = TRUE)
 
 run_deseq_and_export <- function(count_file, pattern_treat, pattern_ctrl, 
@@ -285,7 +287,7 @@ run_deseq_and_export <- function(count_file, pattern_treat, pattern_ctrl,
 
 # Pantoea
 run_deseq_and_export(
-  count_file = "D:/数据/种子代谢物复苏优势菌/转录组/work/counts/pantoea/counts_pantoea.txt",
+  count_file = "rawdata/counts/pantoea/counts_pantoea.txt",
   pattern_treat = "^P_", pattern_ctrl = "^CK_P",
   treat_label = "P", ctrl_label = "CK_P",
   prefix = "pantoea"
@@ -293,7 +295,7 @@ run_deseq_and_export(
 
 # Burkholderia
 run_deseq_and_export(
-  count_file = "D:/数据/种子代谢物复苏优势菌/转录组/work/counts/burkholderia/counts_burkholderia.txt",
+  count_file = "rawdata/counts/burkholderia/counts_burkholderia.txt",
   pattern_treat = "^B_", pattern_ctrl = "^CK_B",
   treat_label = "B", ctrl_label = "CK_B",
   prefix = "burkholderia"
@@ -308,7 +310,7 @@ library(DESeq2)
 library(openxlsx)
 
 # 输出目录
-out_dir <- "D:/数据/种子代谢物复苏优势菌/转录组/rna-seq/rawdata/DEG_result"
+out_dir <- "rawdata/DEG_result"
 if (!dir.exists(out_dir)) dir.create(out_dir, recursive = TRUE)
 
 # 读取对象
