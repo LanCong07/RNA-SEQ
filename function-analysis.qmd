@@ -1,0 +1,73 @@
+# Mechanism analysis
+
+* combine annotation and deg
+* analysis pathway enrichment
+* perform GSEA
+* data visulization
+
+## combine annotation and deg
+
+```{r}
+## 检查 DESeq2 结果与 KEGG 基因集的基因名匹配度（Pantoea & Burkholderia，去掉 .tXX 后缀）
+library(jsonlite)
+library(DESeq2)
+
+# 1. 读取 gson 文件（基因集）
+pantoea_gson <- fromJSON("rawdata/Pantoea/kegg/kegg_user.gson")
+burkholderia_gson <- fromJSON("rawdata/Burkholderia/kegg/kegg_user.gson")
+
+make_gene_sets <- function(df) {
+  # 去掉 .tXX 后缀
+  df$gene <- lapply(df$gene, function(g) sub("\\.t\\d+$", "", g))
+  sets <- setNames(df$gene, df$id)
+  names(sets) <- paste(df$id, df$name, sep = ": ")
+  return(sets)
+}
+
+pantoea_sets <- make_gene_sets(pantoea_gson)
+burkholderia_sets <- make_gene_sets(burkholderia_gson)
+
+# 2. 读取 DESeq2 对象
+dds_p <- readRDS("rawdata/DEG_result/dds_pantoea.rds")
+dds_b <- readRDS("rawdata/DEG_result/dds_burkholderia.rds")
+
+res_p <- results(dds_p)
+res_b <- results(dds_b)
+
+# 3. 构造 geneList（全量排序，去掉 .tXX 后缀）
+geneList_p <- res_p$log2FoldChange
+names(geneList_p) <- sub("\\.t\\d+$", "", rownames(res_p))
+geneList_p <- sort(geneList_p, decreasing = TRUE)
+
+geneList_b <- res_b$log2FoldChange
+names(geneList_b) <- sub("\\.t\\d+$", "", rownames(res_b))
+geneList_b <- sort(geneList_b, decreasing = TRUE)
+
+# 4. 匹配检查函数（打印前几个匹配/未匹配基因）
+check_name_match <- function(geneList, gene_sets, label, n_show = 10) {
+  genes_in_list <- names(geneList)
+  genes_in_sets <- unique(unlist(gene_sets, use.names = FALSE))
+  common_genes <- intersect(genes_in_list, genes_in_sets)
+  unmatched_genes <- setdiff(genes_in_list, genes_in_sets)
+  
+  cat("\n====", label, "====\n")
+  cat("geneList 基因数：", length(genes_in_list), "\n")
+  cat("基因集中的基因数：", length(genes_in_sets), "\n")
+  cat("匹配上的基因数：", length(common_genes), "\n")
+  cat("匹配比例（相对于 geneList）：",
+      round(length(common_genes) / length(genes_in_list) * 100, 2), "%\n")
+  
+  cat("\n前", n_show, "个匹配到的基因名示例:\n")
+  print(head(common_genes, n_show))
+  
+  cat("\n前", n_show, "个未匹配到的基因名示例:\n")
+  print(head(unmatched_genes, n_show))
+  
+  invisible(list(common = common_genes, unmatched = unmatched_genes))
+}
+
+# 5. 检查匹配比例并打印示例
+match_p <- check_name_match(geneList_p, pantoea_sets, "Pantoea", n_show = 10)
+match_b <- check_name_match(geneList_b, burkholderia_sets, "Burkholderia", n_show = 10)
+
+```

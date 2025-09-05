@@ -1,0 +1,192 @@
+# Create genome database
+
+* Genome sequencing (希望组)
+* Genome annotation（NCBI）
+* GenBank Batch Parsing and Multi‑format Export (bioconda)
+* KEGG annotation (KEGG Web service)
+* Create and save gson dbfile
+
+## Genome sequencing (希望组)
+
+## Genome annotation（NCBI）
+
+## GenBank Batch Parsing and Multi‑format Export (bioconda)
+
+```{python}
+from pathlib import Path
+from Bio import SeqIO
+import pandas as pd
+
+def gb_to_fasta_gtf_protein(gb_path):
+    gb_path = Path(gb_path)
+    out_dir = gb_path.parent
+    
+    fasta_file = out_dir / f"{gb_path.stem}.fasta"
+    gtf_file = out_dir / f"{gb_path.stem}.gtf"
+    protein_file = out_dir / f"{gb_path.stem}_protein.fasta"
+    
+    # 读取 GenBank 文件
+    records = list(SeqIO.parse(gb_path, "genbank"))
+    
+    # 保存基因组序列
+    SeqIO.write(records, fasta_file, "fasta")
+    
+    # 生成 GTF 表
+    gtf_rows = []
+    protein_records = []
+    
+    for rec in records:
+        for feature in rec.features:
+            if feature.type in ["gene", "CDS"]:
+                start = int(feature.location.start) + 1  # GTF 是 1-based
+                end = int(feature.location.end)
+                strand = "+" if feature.strand == 1 else "-"
+                attr_parts = []
+                
+                # gene_id
+                gene_id = feature.qualifiers.get("locus_tag", ["NA"])[0]
+                attr_parts.append(f'gene_id "{gene_id}"')
+                
+                # gene_name
+                if "gene" in feature.qualifiers:
+                    attr_parts.append(f'gene_name "{feature.qualifiers["gene"][0]}"')
+                
+                # product
+                if "product" in feature.qualifiers:
+                    attr_parts.append(f'product "{feature.qualifiers["product"][0]}"')
+                
+                attributes = "; ".join(attr_parts)
+                
+                gtf_rows.append([
+                    rec.id, "GenBank", feature.type, start, end, ".", strand, ".", attributes
+                ])
+                
+                # 蛋白质序列
+                if feature.type == "CDS" and "translation" in feature.qualifiers:
+                    protein_seq = feature.qualifiers["translation"][0]
+                    protein_records.append(
+                        SeqIO.SeqRecord(
+                            seq=feature.qualifiers["translation"][0],
+                            id=gene_id,
+                            description=feature.qualifiers.get("product", [""])[0]
+                        )
+                    )
+    
+    # 保存 GTF
+    gtf_df = pd.DataFrame(gtf_rows, columns=[
+        "seqname", "source", "feature", "start", "end", "score", "strand", "frame", "attribute"
+    ])
+    gtf_df.to_csv(gtf_file, sep="\t", index=False, header=False)
+    
+    # 保存蛋白质序列
+    with open(protein_file, "w") as f:
+        for rec in protein_records:
+            f.write(f">{rec.id} {rec.description}\n{rec.seq}\n")
+    
+    print(f"已生成：\n- {fasta_file}\n- {gtf_file}\n- {protein_file}")
+
+# 批量处理两个文件
+gb_files = [
+    r"rawdata\Pantoea\ncbi\pantoea.gb",
+    r"rawdata\Burkholderia\ncbi\Burkholderia.gb"
+]
+
+for gb in gb_files:
+    gb_to_fasta_gtf_protein(gb)
+
+```
+
+## KEGG annotation (KEGG Web service)
+
+## Create and save gson dbfile
+```{r}
+library(KEGGREST)
+library(dplyr)
+library(jsonlite)
+
+process_ko_file <- function(ko_file) {
+  ko_file <- normalizePath(ko_file)
+  out_dir <- dirname(ko_file)
+  
+  # 1. 读取 KO 文件
+  df <- read.table(ko_file,
+                   header = FALSE, sep = "", stringsAsFactors = FALSE,
+                   fill = TRUE, quote = "", comment.char = "")
+  if (ncol(df) == 1) df$V2 <- NA_character_
+  colnames(df) <- c("GeneID", "KO")
+  
+  # 1.1 清理 KO 列
+  df$KO <- trimws(df$KO)
+  df <- df[!is.na(df$KO) & df$KO != "", ]
+  df$KO <- toupper(df$KO)
+  df <- df[grepl("^K\\d{5}$", df$KO), , drop = FALSE]
+  
+  # 去重
+  df <- distinct(df)
+  
+  # 2. 获取 KO → Pathway
+  kos <- unique(df$KO)
+  batch_size <- 200
+  link_list <- list()
+  
+  for (i in seq(1, length(kos), by = batch_size)) {
+    batch <- kos[i:min(i + batch_size - 1, length(kos))]
+    tmp <- keggLink("pathway", paste0("ko:", batch))
+    link_list[[length(link_list) + 1]] <- tmp
+    Sys.sleep(0.2)
+  }
+  
+  links <- unlist(link_list)
+  ko2path <- data.frame(
+    KO = sub("^ko:", "", names(links)),
+    Pathway = sub("^path:", "", links),
+    stringsAsFactors = FALSE
+  )
+  
+  merged <- merge(df, ko2path, by = "KO")
+  
+  # 3. 获取 Pathway 名称
+  path_info <- keggList("pathway", "ko")
+  path_df <- data.frame(
+    Pathway = sub("^path:", "", names(path_info)),
+    Name = as.vector(path_info),
+    stringsAsFactors = FALSE
+  )
+  
+  merged <- merge(merged, path_df, by = "Pathway")
+  
+  # 4. 生成 GSON
+  gson <- merged %>%
+    group_by(Pathway, Name) %>%
+    summarise(gene = list(unique(GeneID)), .groups = "drop") %>%
+    transmute(id = Pathway, name = Name, gene = gene)
+  
+  gson_file <- file.path(out_dir, "kegg_user.gson")
+  write_json(gson, gson_file, pretty = TRUE, auto_unbox = TRUE)
+  
+  # 5. 生成 GMT
+  gmt_lines <- merged %>%
+    group_by(Pathway, Name) %>%
+    summarise(genes = paste(unique(GeneID), collapse = "\t"), .groups = "drop") %>%
+    mutate(line = paste(Pathway, Name, genes, sep = "\t")) %>%
+    pull(line)
+  
+  gmt_file <- file.path(out_dir, "kegg_user.gmt")
+  writeLines(gmt_lines, gmt_file)
+  
+  cat("完成：", ko_file, "\n",
+      "生成：", gson_file, "\n",
+      "生成：", gmt_file, "\n",
+      "保留 KO 数：", length(kos), "\n",
+      "映射到通路的条目数：", nrow(merged), "\n\n")
+}
+
+# 批量处理两个物种
+ko_files <- c(
+  "rawdata/Pantoea/kegg/Pantoea_ko.txt",
+  "rawdata/Burkholderia/kegg/Burkholderia_ko.txt"
+)
+
+lapply(ko_files, process_ko_file)
+
+```

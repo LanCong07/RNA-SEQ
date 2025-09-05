@@ -1,0 +1,28 @@
+project:
+  type: book
+
+book:
+  title: "RNA-seq"
+  author: "兰聪 - 华中农业大学资环学院"
+  date: "2025/9/5"
+  chapters:
+    - index.qmd
+    - create-db.qmd
+    - deg.qmd
+    - function-analysis.qmd
+
+execute:
+  # 默认执行引擎设置为 R
+  engine: r
+
+  python: "C:/Users/99374/anaconda3/envs/Carveme/python.exe"
+  error: true
+  echo: true
+  cache: true
+
+format:
+  html:
+    theme: cosmo
+    code-fold: true
+  pdf:
+    documentclass: scrreprt

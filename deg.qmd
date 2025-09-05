@@ -1,0 +1,349 @@
+# RNA-seq data process
+
+* Sample and design
+* Sequencing results
+* Mapping and quantification
+* DESeq2 analysis
+* DEG results (Excel/CSV table)
+## Sample and design
+
+## Sequencing results
+### 上游分析
+```{bash}
+#!/usr/bin/env bash
+set -Eeuo pipefail
+shopt -s nullglob
+
+###############################################################################
+# Command‐line flags
+###############################################################################
+# 1 = run mapping; 0 = skip mapping entirely
+RUN_MAPPING=1
+
+while [[ $# -gt 0 ]]; do
+  case $1 in
+    --skip-map)
+      RUN_MAPPING=0
+      shift
+      ;;
+    *)
+      break
+      ;;
+  esac
+done
+
+###############################################################################
+# Configuration
+###############################################################################
+WORKDIR="$HOME/数据/种子代谢物复苏优势菌/转录组/TPL2025061860/CleanData"
+OUTDIR="$WORKDIR/results"
+IDXDIR="$OUTDIR/idx"
+SAMD="$OUTDIR/sam"
+BAMD="$OUTDIR/bam"
+CNTD="$OUTDIR/counts"
+
+BUR_FNA="$WORKDIR/burkholderia.fasta"
+PAN_FNA="$WORKDIR/pantoea.fasta"
+BUR_GTF="$WORKDIR/burkholderia.gtf"
+PAN_GTF="$WORKDIR/pantoea.gtf"
+COMBO_FNA="$WORKDIR/combo.fasta"
+COMBO_GTF="$WORKDIR/combo.gtf"
+
+BUR_IDX="$IDXDIR/burkholderia_idx"
+PAN_IDX="$IDXDIR/pantoea_idx"
+COM_IDX="$IDXDIR/combo_idx"
+
+SAMPLES_B=(B_1 B_2 B_3 CK_B_1 CK_B_2 CK_B_3)
+SAMPLES_P=(P_1 P_2 P_3 CK_P_1 CK_P_2 CK_P_3)
+SAMPLES_PB=(PB_1 PB_2 PB_3)
+
+R1_SUFFIX="_clean_R1.fq.gz"
+R2_SUFFIX="_clean_R2.fq.gz"
+
+THREADS="$(nproc)"
+MAX_THREADS=64
+(( THREADS > MAX_THREADS )) && THREADS="$MAX_THREADS"
+MAPQ=10
+STRAND=0
+
+PB_B_PREFIX="ACSMXP_"
+PB_P_PREFIX="ACSMXK_"
+
+# force featureCounts to count this feature type (exon/CDS/transcript/gene)
+FEATURE_TYPE="${FEATURE_TYPE:-exon}"
+
+###############################################################################
+# Helper functions
+###############################################################################
+log()   { echo "[$(date '+%H:%M:%S')] $*"; }
+warn()  { echo "[$(date '+%H:%M:%S')] [WARN] $*" >&2; }
+die()   { echo "[$(date '+%H:%M:%S')] [ERROR] $*" >&2; exit 1; }
+
+need_file() {
+  [[ -f "$1" ]] || die "Missing file: $1"
+}
+
+build_idx() {
+  local fa="$1" prefix="$2"
+  mkdir -p "$IDXDIR"
+  local missing=0
+  for i in {1..8}; do
+    [[ -f "${prefix}.${i}.ht2" ]] || missing=1
+  done
+  if (( missing == 0 )); then
+    log "[SKIP] HISAT2 index exists: $(basename "$prefix")"
+  else
+    log "[RUN ] hisat2-build: $fa → $prefix"
+    hisat2-build "$fa" "$prefix"
+    log "[DONE] index built: $prefix"
+  fi
+}
+
+map_and_sort() {
+  local sample="$1" idx="$2"
+  local bam="$BAMD/${sample}.sorted.bam"
+  local r1="$WORKDIR/${sample}${R1_SUFFIX}"
+  local r2="$WORKDIR/${sample}${R2_SUFFIX}"
+  local logf="$BAMD/${sample}.hisat2.log"
+
+  if [[ -f "$bam" ]]; then
+    log "[SKIP] BAM exists: $bam"
+    return
+  fi
+  if [[ ! -f "$r1" || ! -f "$r2" ]]; then
+    warn "Missing FASTQ for $sample: $r1 or $r2"
+    return
+  fi
+
+  log "[RUN ] hisat2 → BAM: $sample"
+  set -o pipefail
+  hisat2 -p "$THREADS" -x "$idx" -1 "$r1" -2 "$r2" 2> "$logf" \
+    | samtools view -@ "$THREADS" -bS - \
+    | samtools sort  -@ "$THREADS" -o "$bam" -
+  set +o pipefail
+
+  samtools index -@ "$THREADS" "$bam"
+  log "[DONE] sorted & indexed: $bam"
+}
+
+run_featureCounts() {
+  local label="$1"; shift
+  local gtf="$1"; shift
+  local outdir="$CNTD/$label"
+  mkdir -p "$outdir"
+
+  local ftype="$FEATURE_TYPE"
+  log "[INFO] $label: using feature type = $ftype"
+
+  # Validate that the GTF's third column contains the feature
+  if ! awk -F $'\t' -v t="$ftype" '$3==t { found=1; exit } END { exit !found }' "$gtf"; then
+    die "GTF $gtf does not contain feature '$ftype'; recheck or set FEATURE_TYPE"
+  fi
+
+  local bams=()
+  for x in "$@"; do
+    [[ -f "$x" ]] && bams+=("$x")
+  done
+  (( ${#bams[@]} == 0 )) && { warn "$label: no BAMs found"; return; }
+
+  local outfile="$outdir/counts_${label}.txt"
+  log "[RUN ] featureCounts → $outfile"
+  featureCounts \
+    -F GTF \
+    -t "$ftype" \
+    -g "transcript_id" \
+    -T "$THREADS" \
+    -p -B -C \
+    -Q "$MAPQ" \
+    -s "$STRAND" \
+    -a "$gtf" \
+    -o "$outfile" \
+    "${bams[@]}"
+  log "[DONE] featureCounts output: $outfile"
+}
+
+split_pb_counts() {
+  local pb_dir="$CNTD/PB_on_combo"
+  local pb_counts="$pb_dir/counts_PB_on_combo.txt"
+  [[ -f "$pb_counts" ]] || { warn "PB_on_combo counts not found"; return; }
+
+  local out_b="$pb_dir/counts_PB_Burkholderia.txt"
+  local out_p="$pb_dir/counts_PB_Pantoea.txt"
+
+  awk -v p="$PB_B_PREFIX" 'NR==1 || $1~("^"p)' "$pb_counts" > "$out_b"
+  awk -v p="$PB_P_PREFIX" 'NR==1 || $1~("^"p)' "$pb_counts" > "$out_p"
+  log "[SPLIT] PB_on_combo → $(basename $out_b), $(basename $out_p)"
+}
+
+###############################################################################
+# Main workflow
+###############################################################################
+log "Threads = $THREADS"
+cd "$WORKDIR"
+
+mkdir -p "$IDXDIR" "$SAMD" "$BAMD" "$CNTD"
+need_file "$BUR_FNA"
+need_file "$PAN_FNA"
+need_file "$BUR_GTF"
+need_file "$PAN_GTF"
+
+build_idx "$BUR_FNA" "$BUR_IDX"
+build_idx "$PAN_FNA" "$PAN_IDX"
+
+if [[ ! -f "${COM_IDX}.1.ht2" ]]; then
+  [[ -f "$COMBO_FNA" ]] || { cat "$BUR_FNA" "$PAN_FNA" > "$COMBO_FNA"; log "[GEN ] combo.fasta"; }
+  [[ -f "$COMBO_GTF" ]] || { cat "$BUR_GTF" "$PAN_GTF" > "$COMBO_GTF"; log "[GEN ] combo.gtf"; }
+  build_idx "$COMBO_FNA" "$COM_IDX"
+else
+  log "[SKIP] combo index exists"
+fi
+
+if (( RUN_MAPPING )); then
+  log "=== Mapping Burkholderia samples ==="
+  for s in "${SAMPLES_B[@]}";  do map_and_sort "$s" "$BUR_IDX"; done
+
+  log "=== Mapping Pantoea samples ==="
+  for s in "${SAMPLES_P[@]}";  do map_and_sort "$s" "$PAN_IDX"; done
+
+  log "=== Mapping PB_on_combo samples ==="
+  for s in "${SAMPLES_PB[@]}"; do map_and_sort "$s" "$COM_IDX"; done
+else
+  log "[SKIP] mapping stage (--skip-map)"
+fi
+
+log "=== Running featureCounts ==="
+run_featureCounts burkholderia "$BUR_GTF"    "$BAMD"/B_*.sorted.bam  "$BAMD"/CK_B_*.sorted.bam
+run_featureCounts pantoea      "$PAN_GTF"   "$BAMD"/P_*.sorted.bam  "$BAMD"/CK_P_*.sorted.bam
+run_featureCounts PB_on_combo  "$COMBO_GTF" "$BAMD"/PB_*.sorted.bam
+
+split_pb_counts
+
+log "All done." 
+```
+
+## DESeq2 analysis
+
+```{r}
+library(DESeq2)
+library(openxlsx)
+
+# 统一输出目录
+out_dir <- "D:/数据/种子代谢物复苏优势菌/转录组/rna-seq/rawdata/DEG_result"
+if (!dir.exists(out_dir)) dir.create(out_dir, recursive = TRUE)
+
+run_deseq_and_export <- function(count_file, pattern_treat, pattern_ctrl, 
+                                 treat_label, ctrl_label, prefix) {
+  # 1. 读入计数矩阵
+  counts <- read.table(count_file,
+                       header = TRUE, comment.char = "#", row.names = 1,
+                       sep = "\t", check.names = FALSE)
+  
+  # 2. 去掉前 5 列注释信息
+  counts <- counts[, 6:ncol(counts)]
+  
+  # 3. 样本信息表
+  sample_info <- data.frame(
+    row.names = colnames(counts),
+    condition = factor(ifelse(grepl(pattern_treat, colnames(counts)), 
+                              treat_label, ctrl_label),
+                       levels = c(ctrl_label, treat_label))
+  )
+  
+  # 4. 创建 DESeqDataSet
+  dds <- DESeqDataSetFromMatrix(countData = counts,
+                                colData = sample_info,
+                                design = ~ condition)
+  
+  # 5. 过滤低表达基因
+  keep <- rowSums(counts(dds)) >= 10
+  dds <- dds[keep, ]
+  
+  # 6. 运行 DESeq
+  dds <- DESeq(dds)
+  
+  # 7. 保存 dds 对象
+  saveRDS(dds, file = file.path(out_dir, paste0("dds_", prefix, ".rds")))
+  
+  # 8. 提取结果
+  res <- results(dds, contrast = c("condition", treat_label, ctrl_label))
+  res_df <- as.data.frame(res)
+  res_df$gene_id <- rownames(res_df)
+  
+  # 9. 保存 CSV
+  write.csv(res_df, file.path(out_dir, paste0("DESeq2_results_", prefix, ".csv")), 
+            row.names = FALSE)
+  
+  # 10. 保存 Excel
+  wb <- createWorkbook()
+  addWorksheet(wb, prefix)
+  writeData(wb, prefix, res_df)
+  saveWorkbook(wb, file.path(out_dir, paste0("DESeq2_results_", prefix, ".xlsx")), 
+               overwrite = TRUE)
+  
+  message("✅ ", prefix, ": 已完成 DESeq 分析，结果保存到 ", out_dir)
+}
+
+# Pantoea
+run_deseq_and_export(
+  count_file = "D:/数据/种子代谢物复苏优势菌/转录组/work/counts/pantoea/counts_pantoea.txt",
+  pattern_treat = "^P_", pattern_ctrl = "^CK_P",
+  treat_label = "P", ctrl_label = "CK_P",
+  prefix = "pantoea"
+)
+
+# Burkholderia
+run_deseq_and_export(
+  count_file = "D:/数据/种子代谢物复苏优势菌/转录组/work/counts/burkholderia/counts_burkholderia.txt",
+  pattern_treat = "^B_", pattern_ctrl = "^CK_B",
+  treat_label = "B", ctrl_label = "CK_B",
+  prefix = "burkholderia"
+)
+
+```
+
+## DEG results (Excel/CSV table)
+```{r}
+## 导出 DESeq2 结果到 rawdata/DEG_result（每个物种单独 Excel）
+library(DESeq2)
+library(openxlsx)
+
+# 输出目录
+out_dir <- "D:/数据/种子代谢物复苏优势菌/转录组/rna-seq/rawdata/DEG_result"
+if (!dir.exists(out_dir)) dir.create(out_dir, recursive = TRUE)
+
+# 读取对象
+dds_p <- readRDS("dds_p.rds")
+dds_b <- readRDS("dds_b.rds")
+
+# 提取结果
+res_p <- results(dds_p, contrast = c("condition", "P", "CK_P"))
+res_b <- results(dds_b, contrast = c("condition", "B", "CK_B"))
+
+# 转为 data.frame 并加 gene_id 列
+res_p_df <- as.data.frame(res_p)
+res_p_df$gene_id <- rownames(res_p_df)
+res_b_df <- as.data.frame(res_b)
+res_b_df$gene_id <- rownames(res_b_df)
+
+## 保存 CSV
+write.csv(res_p_df, file.path(out_dir, "DESeq2_results_pantoea.csv"), row.names = FALSE)
+write.csv(res_b_df, file.path(out_dir, "DESeq2_results_burkholderia.csv"), row.names = FALSE)
+
+## 保存 Excel（每个物种一个文件）
+wb_p <- createWorkbook()
+addWorksheet(wb_p, "Pantoea")
+writeData(wb_p, "Pantoea", res_p_df)
+saveWorkbook(wb_p, file.path(out_dir, "DESeq2_results_pantoea.xlsx"), overwrite = TRUE)
+
+wb_b <- createWorkbook()
+addWorksheet(wb_b, "Burkholderia")
+writeData(wb_b, "Burkholderia", res_b_df)
+saveWorkbook(wb_b, file.path(out_dir, "DESeq2_results_burkholderia.xlsx"), overwrite = TRUE)
+
+message("✅ 已生成差异表达结果表（每个物种单独 Excel）：",
+        "\n- ", file.path(out_dir, "DESeq2_results_pantoea.csv"),
+        "\n- ", file.path(out_dir, "DESeq2_results_burkholderia.csv"),
+        "\n- ", file.path(out_dir, "DESeq2_results_pantoea.xlsx"),
+        "\n- ", file.path(out_dir, "DESeq2_results_burkholderia.xlsx"))
+
+```
