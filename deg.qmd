@@ -287,7 +287,7 @@ run_deseq_and_export <- function(count_file, pattern_treat, pattern_ctrl,
 
 # Pantoea
 run_deseq_and_export(
-  count_file = "rawdata/counts/pantoea/counts_pantoea.txt",
+  count_file = "rawdata/Pantoea/counts/counts_pantoea.txt",
   pattern_treat = "^P_", pattern_ctrl = "^CK_P",
   treat_label = "P", ctrl_label = "CK_P",
   prefix = "pantoea"
@@ -295,7 +295,7 @@ run_deseq_and_export(
 
 # Burkholderia
 run_deseq_and_export(
-  count_file = "rawdata/counts/burkholderia/counts_burkholderia.txt",
+  count_file = "rawdata/Burkholderia/counts/counts_Burkholderia.txt",
   pattern_treat = "^B_", pattern_ctrl = "^CK_B",
   treat_label = "B", ctrl_label = "CK_B",
   prefix = "burkholderia"
@@ -314,8 +314,8 @@ out_dir <- "rawdata/DEG_result"
 if (!dir.exists(out_dir)) dir.create(out_dir, recursive = TRUE)
 
 # 读取对象
-dds_p <- readRDS("dds_p.rds")
-dds_b <- readRDS("dds_b.rds")
+dds_p <- readRDS("rawdata/DEG_result/dds_pantoea.rds")
+dds_b <- readRDS("rawdata/DEG_result/dds_burkholderia.rds")
 
 # 提取结果
 res_p <- results(dds_p, contrast = c("condition", "P", "CK_P"))
